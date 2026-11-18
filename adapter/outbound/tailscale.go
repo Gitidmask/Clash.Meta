@@ -66,6 +66,18 @@ type TailscaleOption struct {
 	ExitNodeAllowLANAccess *bool  `proxy:"exit-node-allow-lan-access,omitempty"`
 }
 
+type TailscaleStatus struct {
+	BackendState   string   `json:"backend-state"`
+	AuthURL        string   `json:"auth-url"`
+	Hostname       string   `json:"hostname"`
+	ControlURL     string   `json:"control-url"`
+	InterfaceName  string   `json:"interface-name"`
+	MagicDNSSuffix string   `json:"magic-dns-suffix"`
+	Addresses      []string `json:"addresses"`
+	Health         []string `json:"health"`
+	Online         bool     `json:"online"`
+}
+
 func init() {
 	hostinfo.RegisterHostinfoNewHook(func(hi *tailcfg.Hostinfo) {
 		versionDotTxt := strings.TrimSpace(ts.VersionDotTxt)
@@ -181,6 +193,65 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 	outbound.dnsResolver = dns.NewResolverFromClient(dnsTransport)
 	outbound.unregisterDNSResolver = dns.RegisterTailscaleDnsClient(option.Name, dnsTransport)
 	return outbound, nil
+}
+
+func (t *Tailscale) Status(ctx context.Context) (*TailscaleStatus, error) {
+	if err := t.ensureStarted(ctx); err != nil {
+		return nil, err
+	}
+	lc, err := t.server.LocalClient()
+	if err != nil {
+		return nil, err
+	}
+	status, err := lc.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hostname := t.option.Hostname
+	if status.Self != nil && status.Self.HostName != "" {
+		hostname = status.Self.HostName
+	}
+	addresses := make([]string, 0, len(status.TailscaleIPs))
+	for _, address := range status.TailscaleIPs {
+		addresses = append(addresses, address.String())
+	}
+	controlURL := t.option.ControlURL
+	if controlURL == "" {
+		controlURL = "https://controlplane.tailscale.com"
+	}
+	return &TailscaleStatus{
+		BackendState:   status.BackendState,
+		AuthURL:        status.AuthURL,
+		Hostname:       hostname,
+		ControlURL:     controlURL,
+		InterfaceName:  t.option.Interface,
+		MagicDNSSuffix: status.MagicDNSSuffix,
+		Addresses:      addresses,
+		Health:         append([]string(nil), status.Health...),
+		Online:         status.BackendState == "Running",
+	}, nil
+}
+
+func (t *Tailscale) Login(ctx context.Context) error {
+	if err := t.ensureStarted(ctx); err != nil {
+		return err
+	}
+	lc, err := t.server.LocalClient()
+	if err != nil {
+		return err
+	}
+	return lc.StartLoginInteractive(ctx)
+}
+
+func (t *Tailscale) Logout(ctx context.Context) error {
+	if err := t.ensureStarted(ctx); err != nil {
+		return err
+	}
+	lc, err := t.server.LocalClient()
+	if err != nil {
+		return err
+	}
+	return lc.Logout(ctx)
 }
 
 func (t *Tailscale) start() error {
